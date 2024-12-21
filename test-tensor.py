@@ -2,17 +2,16 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 import pickle
-import torch.nn.functional as F
 
-# Charger le modèle entraîné
-model = CLIPModel.from_pretrained("models")  # Le modèle entraîné
+# Charger le modèle CLIP
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 model.eval()  # Passer en mode évaluation
 
 # Charger les embeddings sauvegardés
 with open('embeddings.pkl', 'rb') as f:
     image_embeddings, text_embeddings, codes = pickle.load(f)
 
-# Initialiser le processeur
+# Initialiser le processeur CLIP
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 # Charger une image
@@ -22,23 +21,36 @@ image = Image.open(image_path).convert("RGB")
 # Prétraiter l'image
 image_inputs = processor(images=image, return_tensors="pt")
 with torch.no_grad():
-    image_outputs = model.get_image_features(**image_inputs)
+    image_output = model.get_image_features(**image_inputs)
 
-# Afficher la taille des embeddings d'image et de texte pour déboguer
-print(f"Dimension de l'embedding de l'image : {image_outputs.shape}")
-text_embeddings_tensor = torch.stack(text_embeddings)  # Assure-toi que text_embeddings est bien une liste de tensors
-print(f"Dimension des embeddings des textes : {text_embeddings_tensor.shape}")
+# Vérification de la dimension de l'output
+print(f"Dimension de l'output de l'image entière : {image_output.shape}")
 
-# Si l'embedding des textes contient plusieurs éléments, on les réduit à un seul (en supposant que le bon texte est le premier)
-if text_embeddings_tensor.ndimension() > 2:
-    text_embeddings_tensor = text_embeddings_tensor[0]  # On sélectionne le premier texte (s'il y en a plusieurs)
+# S'assurer que l'embedding est bien un vecteur de taille [512]
+image_embedding = image_output.squeeze(0)
+print(f"Dimension après squeeze pour l'image : {image_embedding.shape}")
 
-# Calculer la similarité entre l'image et le texte
-similarities = torch.matmul(image_outputs, text_embeddings_tensor.T)  # Produit scalaire
+# Définir un seuil de similarité
+threshold = 0.7  # Ajustez ce seuil si nécessaire
 
-# Trouver le texte le plus similaire
-most_similar_idx = torch.argmax(similarities).item()
-most_similar_code = codes[most_similar_idx]
+# Trouver toutes les correspondances
+matched_codes = []
+for idx, stored_image_embeds in enumerate(image_embeddings):
+    # Suppression de dimensions inutiles
+    stored_image_embeds = stored_image_embeds.squeeze(0)
 
-# Afficher le code le plus similaire
-print(f"Le code le plus similaire à l'image est :\n{most_similar_code}")
+    # Calcul de la similarité de cosinus
+    similarity = torch.cosine_similarity(image_embedding, stored_image_embeds, dim=-1).item()
+    print(f"Similarité avec l'embedding {idx} : {similarity}")
+
+    # Ajouter le code correspondant si la similarité dépasse le seuil
+    if similarity >= threshold:
+        matched_codes.append((similarity, codes[idx]))
+
+# Afficher les correspondances trouvées
+if matched_codes:
+    print(f"\nCorrespondances trouvées (seuil {threshold}):")
+    for similarity, code in matched_codes:
+        print(f"\nSimilitude : {similarity}\nCode :\n{code}")
+else:
+    print(f"Aucune correspondance dépassant le seuil {threshold} n'a été trouvée.")

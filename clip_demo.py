@@ -2,7 +2,6 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
-import torch.nn.functional as F
 import pickle
 
 # Dataset pour l'entraînement
@@ -19,6 +18,7 @@ class CustomDataset(Dataset):
         image_path = item['image']
         image = Image.open(image_path).convert("RGB")
         text = item['code']
+        # Prétraitement de l'image et du texte
         inputs = self.processor(text=text, images=image, return_tensors="pt", padding=True)
         return inputs['pixel_values'].squeeze(0), inputs['input_ids'].squeeze(0), text
 
@@ -53,7 +53,7 @@ data = [
 ]
 
 dataset = CustomDataset(data)
-dataloader = DataLoader(dataset, batch_size=4)
+dataloader = DataLoader(dataset, batch_size=1)  # Utilisation d'un batch_size de 1
 
 # Charger le modèle
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
@@ -64,18 +64,28 @@ image_embeddings = []
 text_embeddings = []
 codes = []
 
+# Traiter chaque lot d'images et de textes
 for batch in dataloader:
     pixel_values, input_ids, text = batch
 
-    # Passer dans le modèle
+    # Passer dans le modèle CLIP pour obtenir les embeddings
     outputs = model(pixel_values=pixel_values, input_ids=input_ids)
-    image_embeds = outputs.image_embeds
-    text_embeds = outputs.text_embeds
+    image_embeds = outputs.image_embeds  # Embeddings des images
+    text_embeds = outputs.text_embeds    # Embeddings des textes
 
-    # Ajouter aux listes
-    image_embeddings.append(image_embeds.detach().cpu())
-    text_embeddings.append(text_embeds.detach().cpu())
-    codes.extend(text)  # Sauvegarder le texte correspondant
+    # S'assurer que les dimensions des embeddings sont correctes (512)
+    print(f"Dimension de l'embedding des images : {image_embeds.shape}")
+    print(f"Dimension de l'embedding des textes : {text_embeds.shape}")
+
+    # Ajouter les embeddings aux listes
+    # Chaque image_embeds est maintenant un lot de taille 1 avec un embedding de forme [512]
+    for img_emb in image_embeds:
+        image_embeddings.append(img_emb.detach().cpu().squeeze())  # Squeeze pour enlever les dimensions inutiles
+
+    for txt_emb in text_embeds:
+        text_embeddings.append(txt_emb.detach().cpu().squeeze())  # Squeeze pour enlever les dimensions inutiles
+
+    codes.extend(text)  # Sauvegarder les codes de texte correspondants
 
 # Sauvegarder les embeddings dans un fichier
 with open('embeddings.pkl', 'wb') as f:
