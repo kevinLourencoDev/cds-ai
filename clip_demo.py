@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
+import torch.nn.functional as F
 
 # Étape 1 : Préparer vos données
 class CustomDataset(Dataset):
@@ -23,7 +24,7 @@ class CustomDataset(Dataset):
         text = item['code']
         inputs = self.processor(text=text, images=image, return_tensors="pt", padding=True)
 
-        return inputs['pixel_values'], inputs['input_ids']  # On renvoie directement les valeurs attendues par le modèle
+        return inputs['pixel_values'].squeeze(0), inputs['input_ids'].squeeze(0)  # On renvoie directement les valeurs attendues par le modèle
 
 data = [
     {
@@ -33,6 +34,16 @@ data = [
             <mat-label class="cdk-visually-hidden">Field no label</mat-label>
             <input matInput placeholder="Input with no Label" />
         </mat-form-field>
+        """
+    },
+    {
+        "image": "images/input-x-small.png",
+        "code": """
+        <mat-form-field cds-size="x-small">
+            <mat-label>Input x-small</mat-label>
+            <input matInput placeholder="Placeholder value" />
+            <mat-hint align="start">Hint message</mat-hint>
+         </mat-form-field>
         """
     },
 ]
@@ -47,6 +58,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
 loss_fn = torch.nn.CrossEntropyLoss()
 
 for epoch in range(10):  # Nombre d'époques
+    model.train()  # Mettre le modèle en mode entraînement
     for batch in dataloader:
         pixel_values, input_ids = batch
 
@@ -57,11 +69,31 @@ for epoch in range(10):  # Nombre d'époques
         image_embeddings = outputs.image_embeds
         text_embeddings = outputs.text_embeds
 
-        # Calcul de la perte
-        loss = loss_fn(image_embeddings, text_embeddings)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        # Normalisation des embeddings
+        image_embeddings = F.normalize(image_embeddings, p=2, dim=-1)
+        text_embeddings = F.normalize(text_embeddings, p=2, dim=-1)
+
+        # Calcul des similarités entre les embeddings image et texte (produit scalaire)
+        logits_per_image = torch.matmul(image_embeddings, text_embeddings.T)  # Produit scalaire
+        logits_per_text = logits_per_image.T  # Transposé pour la perte
+
+        # Création des labels (les indices de correspondance pour chaque paire image-texte)
+        labels = torch.arange(image_embeddings.size(0)).to(image_embeddings.device)
+
+        # Calcul de la perte contrastive
+        loss_image = loss_fn(logits_per_image, labels)
+        loss_text = loss_fn(logits_per_text, labels)
+
+        # Moyenne des deux pertes
+        loss = (loss_image + loss_text) / 2
+
+        # Affichage de la perte pour le débogage
+        print(f"Epoch {epoch+1} - Loss: {loss.item()}")
+
+        # Backpropagation et mise à jour des gradients
+        optimizer.zero_grad()  # Remise à zéro des gradients
+        loss.backward()        # Rétropropagation
+        optimizer.step()       # Mise à jour des poids
 
     print(f"Epoch {epoch + 1}: Loss = {loss.item()}")
 
