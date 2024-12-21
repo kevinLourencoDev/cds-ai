@@ -1,10 +1,11 @@
 import torch
+from transformers import CLIPProcessor, CLIPModel
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
 import torch.nn.functional as F
+import pickle
 
-# Étape 1 : Préparer vos données
+# Dataset pour l'entraînement
 class CustomDataset(Dataset):
     def __init__(self, data):
         self.data = data
@@ -15,24 +16,20 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        
-        # Charger l'image avec PIL
         image_path = item['image']
-        image = Image.open(image_path).convert("RGB")  # S'assurer que l'image est en RGB
-
-        # Traiter l'image et le texte
+        image = Image.open(image_path).convert("RGB")
         text = item['code']
         inputs = self.processor(text=text, images=image, return_tensors="pt", padding=True)
+        return inputs['pixel_values'].squeeze(0), inputs['input_ids'].squeeze(0), text
 
-        return inputs['pixel_values'].squeeze(0), inputs['input_ids'].squeeze(0)  # On renvoie directement les valeurs attendues par le modèle
-
+# Préparer les données
 data = [
     {
         "image": "images/input-no-label.png",
         "code": """
         <mat-form-field data-test="mat-form-field-with-no-label">
             <mat-label class="cdk-visually-hidden">Field no label</mat-label>
-            <input matInput placeholder="Input with no Label" />
+            <input matInput placeholder="Input with no" />
         </mat-form-field>
         """
     },
@@ -43,59 +40,43 @@ data = [
             <mat-label>Input x-small</mat-label>
             <input matInput placeholder="Placeholder value" />
             <mat-hint align="start">Hint message</mat-hint>
-         </mat-form-field>
+     </mat-form-field>
+        """
+    },
+    {
+        "image": "images/button.png",
+        "code": """
+         <button mat-button color="primary" cds-type="very-strong">Very strong</button>
+         xxxx xxxx xxxxxx xxxxxx xxxxx xxxxx xxxxxxx xxxxxxxx xxxxxxxxxx xxxxxxxxxxx   xxxxxxxx   xxxxxxxx  xxxxxxxx xxxxxxxx xxxxx xxxxxxx xxxxxxxx xxxxxxxxxx xxxxxxxxxxx xxxxxxx xxxxxxxx xxxxxxxx
         """
     },
 ]
+
 dataset = CustomDataset(data)
 dataloader = DataLoader(dataset, batch_size=4)
 
-# Étape 2 : Charger le modèle CLIP
+# Charger le modèle
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+model.train()
 
-# Étape 3 : Entraîner le modèle
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
-loss_fn = torch.nn.CrossEntropyLoss()
+# Sauvegarder les embeddings image et texte
+image_embeddings = []
+text_embeddings = []
+codes = []
 
-for epoch in range(10):  # Nombre d'époques
-    model.train()  # Mettre le modèle en mode entraînement
-    for batch in dataloader:
-        pixel_values, input_ids = batch
+for batch in dataloader:
+    pixel_values, input_ids, text = batch
 
-        # Passer les données dans le modèle
-        outputs = model(pixel_values=pixel_values, input_ids=input_ids)
+    # Passer dans le modèle
+    outputs = model(pixel_values=pixel_values, input_ids=input_ids)
+    image_embeds = outputs.image_embeds
+    text_embeds = outputs.text_embeds
 
-        # Obtenez les embeddings
-        image_embeddings = outputs.image_embeds
-        text_embeddings = outputs.text_embeds
+    # Ajouter aux listes
+    image_embeddings.append(image_embeds.detach().cpu())
+    text_embeddings.append(text_embeds.detach().cpu())
+    codes.extend(text)  # Sauvegarder le texte correspondant
 
-        # Normalisation des embeddings
-        image_embeddings = F.normalize(image_embeddings, p=2, dim=-1)
-        text_embeddings = F.normalize(text_embeddings, p=2, dim=-1)
-
-        # Calcul des similarités entre les embeddings image et texte (produit scalaire)
-        logits_per_image = torch.matmul(image_embeddings, text_embeddings.T)  # Produit scalaire
-        logits_per_text = logits_per_image.T  # Transposé pour la perte
-
-        # Création des labels (les indices de correspondance pour chaque paire image-texte)
-        labels = torch.arange(image_embeddings.size(0)).to(image_embeddings.device)
-
-        # Calcul de la perte contrastive
-        loss_image = loss_fn(logits_per_image, labels)
-        loss_text = loss_fn(logits_per_text, labels)
-
-        # Moyenne des deux pertes
-        loss = (loss_image + loss_text) / 2
-
-        # Affichage de la perte pour le débogage
-        print(f"Epoch {epoch+1} - Loss: {loss.item()}")
-
-        # Backpropagation et mise à jour des gradients
-        optimizer.zero_grad()  # Remise à zéro des gradients
-        loss.backward()        # Rétropropagation
-        optimizer.step()       # Mise à jour des poids
-
-    print(f"Epoch {epoch + 1}: Loss = {loss.item()}")
-
-# Étape 4 : Sauvegarder le modèle
-model.save_pretrained("models")
+# Sauvegarder les embeddings dans un fichier
+with open('embeddings.pkl', 'wb') as f:
+    pickle.dump((image_embeddings, text_embeddings, codes), f)
